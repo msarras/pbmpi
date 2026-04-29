@@ -1,6 +1,52 @@
 CC=mpic++
-CPPFLAGS= -Wall -O3 -std=c++11
-LDFLAGS= -O3
+
+# Architecture and floating-point profile.
+#
+# ARCH selects the -march target (default: native; override with e.g.
+#   make ARCH=x86-64-v3   for portable AVX2 builds, or
+#   make ARCH=             to keep the compiler default).
+#
+# SAFEFP picks the FP profile:
+#   conservative (default): vectorized math (libmvec), no expression
+#                           re-association, no NaN/errno assumptions.
+#                           With -std=c++11 the default FP_CONTRACT is
+#                           "on" (per-statement only), so a*b+c is not
+#                           fused into FMA across statements. Auto-vec
+#                           may still reorder reductions, so this is
+#                           tier B-equivalent against the stock baseline,
+#                           though many programs come out tier A.
+#   fast       : full -ffast-math (allows re-association, finite-only,
+#                no signed-zero, fused FMA contraction). Tier C only.
+#   stock      : the original -O3 only flags (for regression baseline).
+ARCH   ?= native
+SAFEFP ?= conservative
+
+ifeq ($(SAFEFP),stock)
+  ARCHFLAG :=
+  FPFLAGS  :=
+  EXTRAOPT :=
+else
+  ifeq ($(strip $(ARCH)),)
+    ARCHFLAG :=
+  else
+    # Do NOT add -mfma here. -march=native (or a specific arch like
+    # haswell/skylake) already enables FMA iff the target CPU supports
+    # it. Adding -mfma on top forces FMA emission on CPUs without it
+    # (e.g. Ivy Bridge), causing SIGILL at runtime.
+    ARCHFLAG := -march=$(ARCH)
+  endif
+  EXTRAOPT := -funroll-loops
+  ifeq ($(SAFEFP),conservative)
+    FPFLAGS := -fno-math-errno -fno-trapping-math
+  else ifeq ($(SAFEFP),fast)
+    FPFLAGS := -ffast-math
+  else
+    $(error SAFEFP must be one of: conservative, fast, stock (got '$(SAFEFP)'))
+  endif
+endif
+
+CPPFLAGS= -Wall -O3 -std=c++11 $(ARCHFLAG) $(FPFLAGS) $(EXTRAOPT)
+LDFLAGS= -O3 $(ARCHFLAG) $(FPFLAGS) $(EXTRAOPT)
 SRCS=  TaxonSet.cpp Tree.cpp Random.cpp SequenceAlignment.cpp CodonSequenceAlignment.cpp \
 	StateSpace.cpp CodonStateSpace.cpp ZippedSequenceAlignment.cpp SubMatrix.cpp \
 	GTRSubMatrix.cpp CodonSubMatrix.cpp linalg.cpp Chrono.cpp BranchProcess.cpp \
