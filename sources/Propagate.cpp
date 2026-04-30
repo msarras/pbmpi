@@ -85,8 +85,16 @@ void MatrixSubstitutionProcess::Propagate(double*** from, double*** to, double t
 	int i,j,k,l,offset;
 	double length,max,maxup;
 	const int nstate = GetMatrix(sitemin)->GetNstate();
-	// double* bigaux = new double[(sitemax - sitemin) * GetNrate(0) * nstate];
-	double* aux = new double[GetNsite() * GetNrate(0) * nstate];
+	// Lazily (re)allocate the persistent scratch buffer. Same size and
+	// indexing as the previous per-call new[]; this is purely a storage
+	// lift, no FP arithmetic changes.
+	const size_t needed = (size_t) GetNsite() * GetNrate(0) * nstate;
+	if (needed > propagate_aux_size)	{
+		delete[] propagate_aux;
+		propagate_aux = new double[needed];
+		propagate_aux_size = needed;
+	}
+	double* aux = propagate_aux;
 	for(i=sitemin; i<sitemax; i++)	{
         if (ActiveSite(i))  {
             SubMatrix* matrix = GetMatrix(i);
@@ -228,7 +236,7 @@ void MatrixSubstitutionProcess::Propagate(double*** from, double*** to, double t
             }
         }
     }
-    delete[] aux;
+    // aux is the persistent member buffer; do not delete here.
 }
 
 void MatrixSubstitutionProcess::SitePropagate(int i, double** from, double** to, double time, bool condalloc)	{
@@ -240,7 +248,13 @@ void MatrixSubstitutionProcess::SitePropagate(int i, double** from, double** to,
 	// should be dependent on site
 	// const int nstate = GetMatrix(GetSiteMin())->GetNstate();
 
-	double* aux = new double[GetNstate(i)];
+	const int needed_small = GetNstate(i);
+	if (needed_small > sitepropagate_aux_size)	{
+		delete[] sitepropagate_aux;
+		sitepropagate_aux = new double[needed_small];
+		sitepropagate_aux_size = needed_small;
+	}
+	double* aux = sitepropagate_aux;
 
 	SubMatrix* matrix = GetMatrix(i);
 	double** eigenvect = matrix->GetEigenVect();
@@ -352,7 +366,6 @@ void MatrixSubstitutionProcess::SitePropagate(int i, double** from, double** to,
 			down[nstate] = up[nstate];
 		}
 	}
-
-	delete[] aux;
+	// aux is the persistent member buffer; do not delete here.
 }
 

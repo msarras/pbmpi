@@ -24,8 +24,12 @@ class MatrixSubstitutionProcess : public virtual SubstitutionProcess, public vir
 
 	public:
 
-	MatrixSubstitutionProcess() {}
-	virtual ~MatrixSubstitutionProcess() {}
+	MatrixSubstitutionProcess() : propagate_aux(0), propagate_aux_size(0),
+	                              sitepropagate_aux(0), sitepropagate_aux_size(0) {}
+	virtual ~MatrixSubstitutionProcess() {
+		delete[] propagate_aux;
+		delete[] sitepropagate_aux;
+	}
 
 	virtual int GetNstate(int site) {return GetMatrix(site)->GetNstate();}
 	// virtual int GetNstate() {return GetMatrix(0)->GetNstate();}
@@ -47,6 +51,15 @@ class MatrixSubstitutionProcess : public virtual SubstitutionProcess, public vir
 	BranchSitePath* ResampleUniformized(int stateup, int statedown, double rate, double totaltime, SubMatrix* matrix);
 
 	void SimuPropagate(int* stateup, int* statedown, double time);
+
+	// Persistent scratch buffers for Propagate/SitePropagate.
+	// Replaces a per-call new[]/delete[] pair (one O(Nsite*Nrate*Nstate) and
+	// one O(Nstate)) that was the dominant heap-allocator pressure during
+	// likelihood evaluation. Lazily sized on first use, never shrunk.
+	double* propagate_aux;
+	size_t  propagate_aux_size;
+	double* sitepropagate_aux;
+	int     sitepropagate_aux_size;
 };
 
 #endif
