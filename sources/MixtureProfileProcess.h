@@ -91,6 +91,15 @@ class MixtureProfileProcess: public virtual ProfileProcess	{
 	// suffstat lnL of site <site> when allocated to component <cat>
 	virtual double LogStatProb(int site, int cat) = 0;
 
+	// Same as above, but with log(profile[cat][k]) precomputed by the
+	// caller. Hot inner-loop variant: in per-site Gibbs sweeps the
+	// caller knows profile[cat] is invariant across many calls and can
+	// hoist the per-component log() table out. Default falls back to
+	// the inline-log version so non-overriding subclasses still work.
+	virtual double LogStatProb(int site, int cat, const double* /*logpi*/)	{
+		return LogStatProb(site, cat);
+	}
+
 	// the component suff stat log prob is yet to be implemented in subclasses
 	virtual double ProfileSuffStatLogProb(int cat) = 0;
 

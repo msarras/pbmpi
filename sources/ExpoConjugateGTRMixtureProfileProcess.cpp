@@ -121,6 +121,21 @@ double ExpoConjugateGTRMixtureProfileProcess::LogStatProb(int site, int cat)	{
 	return total;
 }
 
+// Same expression as the two-arg form, with log(pi[k]) read from the
+// caller-supplied logpi[]. log() is deterministic, so the value of the
+// expression -- and the per-iteration partial sum -- is bit-identical
+// to the two-arg form.
+double ExpoConjugateGTRMixtureProfileProcess::LogStatProb(int site, int cat, const double* logpi)	{
+	const int* count = GetSiteProfileSuffStatCount(site);
+	const double* beta = GetSiteProfileSuffStatBeta(site);
+	double* pi = profile[cat];
+	double total = 0;
+	for (int k=0; k<GetDim(); k++)	{
+		total += count[k] * logpi[k] - beta[k] * pi[k];
+	}
+	return total;
+}
+
 
 
 double ExpoConjugateGTRMixtureProfileProcess::PoissonDiffLogSampling(int cat, int site)	{

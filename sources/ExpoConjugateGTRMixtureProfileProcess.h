@@ -54,6 +54,7 @@ class ExpoConjugateGTRMixtureProfileProcess : public virtual GTRMixtureProfilePr
 	double ProfileSuffStatLogProb(int cat);
 	void SwapComponents(int cat1, int cat2);
 	virtual double LogStatProb(int site, int cat);
+	virtual double LogStatProb(int site, int cat, const double* logpi);
 
 	virtual void Create(int innsite, int indim);
 	virtual void Delete();

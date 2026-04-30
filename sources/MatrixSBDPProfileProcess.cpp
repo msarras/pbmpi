@@ -228,6 +228,11 @@ void MatrixSBDPProfileProcess::SlaveMixMove()	{
 	double* mLogSamplingArray = new double[Ncomponent];
 	double* cumul = new double[Ncomponent];
 	double* tmp = new double[Ncomponent * GetDim() + 1];
+	// Cache log(profile[cat][k]) so the per-site Gibbs inner loop reads
+	// from a table instead of evaluating log() Dim times per call. log()
+	// is deterministic, so the cached value equals the inline-evaluated
+	// value bit-for-bit -- this is a tier-A bitwise refactor.
+	double* logprofile = new double[GetNmodeMax() * GetDim()];
 
 	int width = GetNsite()/(GetNprocs()-1);
 	int smin[GetNprocs()-1];
@@ -244,6 +249,16 @@ void MatrixSBDPProfileProcess::SlaveMixMove()	{
 
 		MPI_Bcast(weight,Ncomponent,MPI_DOUBLE,0,MPI_COMM_WORLD);
 		// MPI_Bcast(allocprofile,Ncomponent*GetDim(),MPI_DOUBLE,0,MPI_COMM_WORLD);
+
+		// Refresh the log(profile) table. Profile is invariant from here
+		// through the end of the realloc Gibbs sweep (line ~322 below);
+		// the profile move further down rebroadcasts and we recompute
+		// at the next rep iteration.
+		for (int cat = 0; cat < GetNmodeMax(); cat++)	{
+			for (int k = 0; k < GetDim(); k++)	{
+				logprofile[cat * GetDim() + k] = log(profile[cat][k]);
+			}
+		}
 
 		double totp = 0;
 		for (int mode = 0; mode<K0; mode++)	{
@@ -266,7 +281,7 @@ void MatrixSBDPProfileProcess::SlaveMixMove()	{
 				double max = 0;
 				// double mean = 0;
 				for (int mode = 0; mode<K0; mode++)	{
-					mLogSamplingArray[mode] = LogStatProb(site,mode);
+					mLogSamplingArray[mode] = LogStatProb(site,mode,&logprofile[mode * GetDim()]);
 					if ((!mode) || (max < mLogSamplingArray[mode]))	{
 						max = mLogSamplingArray[mode];
 					}
@@ -299,15 +314,15 @@ void MatrixSBDPProfileProcess::SlaveMixMove()	{
 					}
 				}
 
-				// MH 
+				// MH
 				double logratio = 0;
 				if (mode >= K0)	{
-					logratio += LogStatProb(site,mode) - max - log(M);
+					logratio += LogStatProb(site,mode,&logprofile[mode * GetDim()]) - max - log(M);
 				}
 				if (bk >= K0)	{
-					logratio -= LogStatProb(site,bk) - max - log(M);
+					logratio -= LogStatProb(site,bk,&logprofile[bk * GetDim()]) - max - log(M);
 				}
-				
+
 				if (log(rnd::GetRandom().Uniform()) > logratio)	{
 					mode = bk;
 				}
@@ -413,6 +428,7 @@ void MatrixSBDPProfileProcess::SlaveMixMove()	{
 	delete[] cumul;
 	delete[] mLogSamplingArray;
 	delete[] tmp;
+	delete[] logprofile;
 }
 
 
