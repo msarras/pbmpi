@@ -17,6 +17,8 @@ along with PhyloBayes. If not, see <http://www.gnu.org/licenses/>.
 #ifndef MATRIXSUB_H
 #define MATRIXSUB_H
 
+#include <unordered_map>
+
 #include "SubstitutionProcess.h"
 #include "MatrixProfileProcess.h"
 
@@ -25,10 +27,12 @@ class MatrixSubstitutionProcess : public virtual SubstitutionProcess, public vir
 	public:
 
 	MatrixSubstitutionProcess() : propagate_aux(0), propagate_aux_size(0),
-	                              sitepropagate_aux(0), sitepropagate_aux_size(0) {}
+	                              sitepropagate_aux(0), sitepropagate_aux_size(0),
+	                              expdiag_aux(0), expdiag_aux_size(0) {}
 	virtual ~MatrixSubstitutionProcess() {
 		delete[] propagate_aux;
 		delete[] sitepropagate_aux;
+		delete[] expdiag_aux;
 	}
 
 	virtual int GetNstate(int site) {return GetMatrix(site)->GetNstate();}
@@ -60,6 +64,17 @@ class MatrixSubstitutionProcess : public virtual SubstitutionProcess, public vir
 	size_t  propagate_aux_size;
 	double* sitepropagate_aux;
 	int     sitepropagate_aux_size;
+
+	// Per-call cache of exp(length * eigenval[k]) keyed by (matrix, rate cat).
+	// In SumOverRateAllocations mode, length = time * rate[j] is invariant
+	// across sites that share a matrix, so each site re-evaluates the same
+	// nstate exp() calls. We dedupe by SubMatrix* identity within a single
+	// Propagate call. Reused across calls (cleared at the top of Propagate),
+	// never freed mid-run. matrix_to_slot is also persistent: clear() reuses
+	// bucket storage across calls.
+	double* expdiag_aux;
+	size_t  expdiag_aux_size;
+	std::unordered_map<SubMatrix*, int> matrix_to_slot;
 };
 
 #endif

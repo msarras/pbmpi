@@ -85,22 +85,71 @@ void MatrixSubstitutionProcess::Propagate(double*** from, double*** to, double t
 	int i,j,k,l,offset;
 	double length,max,maxup;
 	const int nstate = GetMatrix(sitemin)->GetNstate();
+	const int nrate = GetNrate(0);
 	// Lazily (re)allocate the persistent scratch buffer. Same size and
 	// indexing as the previous per-call new[]; this is purely a storage
 	// lift, no FP arithmetic changes.
-	const size_t needed = (size_t) GetNsite() * GetNrate(0) * nstate;
+	const size_t needed = (size_t) GetNsite() * nrate * nstate;
 	if (needed > propagate_aux_size)	{
 		delete[] propagate_aux;
 		propagate_aux = new double[needed];
 		propagate_aux_size = needed;
 	}
 	double* aux = propagate_aux;
+
+	// Dedupe exp(length * eigenval[k]) across sites that share a matrix.
+	// Only valid when GetRate(i,j) is independent of i for fixed j -- i.e.
+	// when SumOverRateAllocations is true. Propagate is called only in that
+	// regime by current callers (the collapsed/data-augmentation phase uses
+	// SimuPropagate, not Propagate), so we expect can_dedupe to be true on
+	// the hot path. If it ever isn't, we fall through to the inline form.
+	const bool can_dedupe = SumOverRateAllocations();
+	if (can_dedupe)	{
+		matrix_to_slot.clear();
+		int nmat = 0;
+		for (int s=sitemin; s<sitemax; s++)	{
+			if (ActiveSite(s))	{
+				SubMatrix* m = GetMatrix(s);
+				if (matrix_to_slot.find(m) == matrix_to_slot.end())	{
+					matrix_to_slot[m] = nmat++;
+				}
+			}
+		}
+		const size_t exp_needed = (size_t) nmat * nrate * nstate;
+		if (exp_needed > expdiag_aux_size)	{
+			delete[] expdiag_aux;
+			expdiag_aux = new double[exp_needed];
+			expdiag_aux_size = exp_needed;
+		}
+		// Same expression as the inline form (length * eigenval[k]).
+		// exp() is deterministic per platform libm, so the cached value
+		// is bit-identical to the value the inline form would compute.
+		for (auto& p : matrix_to_slot)	{
+			SubMatrix* m = p.first;
+			int mi = p.second;
+			double* eigenval_m = m->GetEigenVal();
+			double* base = expdiag_aux + (size_t) mi * nrate * nstate;
+			for (int jj=0; jj<nrate; jj++)	{
+				double lj = time * GetRate(0, jj);
+				double* slot = base + jj * nstate;
+				for (int kk=0; kk<nstate; kk++)	{
+					slot[kk] = exp(lj * eigenval_m[kk]);
+				}
+			}
+		}
+	}
+
 	for(i=sitemin; i<sitemax; i++)	{
         if (ActiveSite(i))  {
             SubMatrix* matrix = GetMatrix(i);
             double** eigenvect = matrix->GetEigenVect();
             double** inveigenvect = matrix->GetInvEigenVect();
             double* eigenval = matrix->GetEigenVal();
+            const double* expdiag_for_matrix = 0;
+            if (can_dedupe)	{
+                int mi = matrix_to_slot[matrix];
+                expdiag_for_matrix = expdiag_aux + (size_t) mi * nrate * nstate;
+            }
             for(j=0; j<GetNrate(i); j++)	{
                 if ((!condalloc) || (ratealloc[i] == j))	{
                     double* up = from[i][j];
@@ -150,13 +199,22 @@ void MatrixSubstitutionProcess::Propagate(double*** from, double*** to, double t
                     //tmpaux -= nstate;
 
                     // exp(length * L) . aux  -> aux
-                    //double* tmpval = eigenval;
-                    for(k=0; k<nstate; k++)	{
-                        //(*tmpaux++) *= exp(length * (*tmpval++));
-                        aux[offset+k] *= exp(length * eigenval[k]);
+                    // Read from cached expdiag table when available; the
+                    // cached entry is exp(time * rate[j] * eigenval[k]),
+                    // which equals exp(length * eigenval[k]) bit-for-bit
+                    // since length = time * GetRate(i,j) = time * rate[j]
+                    // when SumOverRateAllocations is true.
+                    if (can_dedupe)	{
+                        const double* expdiag_jk = expdiag_for_matrix + j * nstate;
+                        for(k=0; k<nstate; k++)	{
+                            aux[offset+k] *= expdiag_jk[k];
+                        }
                     }
-                    //tmpaux -= nstate;
-                    //tmpval -= nstate;
+                    else	{
+                        for(k=0; k<nstate; k++)	{
+                            aux[offset+k] *= exp(length * eigenval[k]);
+                        }
+                    }
 
                     // P . aux -> down
                     //double* tmpdown = down;
