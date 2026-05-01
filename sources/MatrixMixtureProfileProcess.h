@@ -53,6 +53,7 @@ class MatrixMixtureProfileProcess : public virtual MatrixProfileProcess, public 
 
 
 	virtual void UpdateModeProfileSuffStat() = 0;
+	using MixtureProfileProcess::UpdateModeProfileSuffStat;  // expose 2-arg overload
 
 	// should be called each time global parameters are modified
 	virtual void UpdateMatrices()	{

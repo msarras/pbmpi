@@ -85,6 +85,15 @@ class MixtureProfileProcess: public virtual ProfileProcess	{
 
 	virtual void UpdateModeProfileSuffStat() = 0;
 
+	// Sliced variant: aggregate suffstats only for components in [cmin, cmax).
+	// In SBDP SlaveMixMove each slave only invokes MoveProfile on its
+	// assigned component slice, so suffstat slots outside that slice are
+	// dead memory on this rank. Default impl falls back to the full update;
+	// subclasses that want the slice optimization override this.
+	virtual void UpdateModeProfileSuffStat(int /*cmin*/, int /*cmax*/)	{
+		UpdateModeProfileSuffStat();
+	}
+
 	// implements a pure virtual defined in ProfileProcess
 	double ProfileSuffStatLogProb();
 

@@ -385,7 +385,10 @@ void MatrixSBDPProfileProcess::SlaveMixMove()	{
 		}
 
 		// update sufficient statistics
-		UpdateModeProfileSuffStat();
+		// Slice to [cmin, cmax): only this slave's components are read by
+		// the MoveProfile loop below, so slots outside the range need not
+		// be aggregated on this rank.
+		UpdateModeProfileSuffStat(cmin, cmax);
 
 		// move components in the range just computed
 		double total = 0;

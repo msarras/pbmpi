@@ -61,6 +61,9 @@ class ExpoConjugateGTRMixtureProfileProcess : public virtual GTRMixtureProfilePr
 
 	// collects site-specific suffstats and pools them componentwise
 	void UpdateModeProfileSuffStat();
+	// Sliced version: only zero / accumulate for components in [cmin, cmax).
+	// Slots outside the slice retain whatever values they had on entry.
+	void UpdateModeProfileSuffStat(int cmin, int cmax);
 
 	// component-specific sufficient statistics
 	int** profilesuffstatcount;

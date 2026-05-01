@@ -80,6 +80,31 @@ void ExpoConjugateGTRMixtureProfileProcess::UpdateModeProfileSuffStat()	{
 	}
 }
 
+// Same arithmetic as the no-arg form, restricted to components in [cmin, cmax).
+// Sites whose alloc[i] falls outside that range still contribute zero work
+// (matched against the unsliced version, which would have written into
+// other slaves' slots that this slave never reads). Slots outside the
+// slice retain whatever they had before -- callers must not read them.
+void ExpoConjugateGTRMixtureProfileProcess::UpdateModeProfileSuffStat(int cmin, int cmax)	{
+	for (int i=cmin; i<cmax; i++)	{
+		for (int k=0; k<GetDim(); k++)	{
+			profilesuffstatcount[i][k] = 0;
+			profilesuffstatbeta[i][k] = 0;
+		}
+	}
+	for (int i=0; i<GetNsite(); i++)	{
+		int cat = alloc[i];
+		if (cat >= cmin && cat < cmax)	{
+			const int* count = GetSiteProfileSuffStatCount(i);
+			const double* beta = GetSiteProfileSuffStatBeta(i);
+			for (int k=0; k<GetDim(); k++)	{
+				profilesuffstatcount[cat][k] += count[k];
+				profilesuffstatbeta[cat][k] += beta[k];
+			}
+		}
+	}
+}
+
 double ExpoConjugateGTRMixtureProfileProcess::ProfileSuffStatLogProb(int cat)	{
 	double total = 0;
 	for (int k=0; k<GetDim(); k++)	{
