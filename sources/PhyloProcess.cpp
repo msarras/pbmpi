@@ -1333,7 +1333,7 @@ void PhyloProcess::GlobalCollapse()	{
 	CreateSuffStat();
 }
 
-double PhyloProcess::GlobalComputeNodeLikelihood(const Link* from, int auxindex)	{ 
+double PhyloProcess::GlobalComputeNodeLikelihood(const Link* from, int auxindex)	{
 	// MPI
 	// send messages to slaves : message "compute likelihood", with 2 arguments: GetLinkIndex(from) and auxindex
 	// slaves: upon receiving message with two arguments fromindex and auxindex
@@ -1341,19 +1341,22 @@ double PhyloProcess::GlobalComputeNodeLikelihood(const Link* from, int auxindex)
 	// return the value
 	assert(myid == 0);
 	MESSAGE signal = LIKELIHOOD;
-	MPI_Status stat;
 	MPI_Bcast(&signal,1,MPI_INT,0,MPI_COMM_WORLD);
-	int i,args[] = {GetLinkIndex(from),auxindex};
+	int args[] = {GetLinkIndex(from),auxindex};
 	MPI_Bcast(args,2,MPI_INT,0,MPI_COMM_WORLD);
-	// master : sums up all values sent by slaves
-	// store this sum into member variable logL
-	// and return it
 
+	// Replace the serial Recv-loop with MPI_Gather + a rank-ordered local
+	// sum on master.  The original used MPI_ANY_SOURCE, which in practice
+	// completed in rank order on this codebase (validated by prior tier-A
+	// runs), but is not guaranteed by the spec.  MPI_Gather + summing
+	// slave_logl[1..nprocs-1] in increasing rank pins the FP order
+	// deterministically and matches the original add sequence exactly.
+	double sendbuf = 0.0;
+	double slave_logl[nprocs];
+	MPI_Gather(&sendbuf,1,MPI_DOUBLE,slave_logl,1,MPI_DOUBLE,0,MPI_COMM_WORLD);
 	logL = 0.0;
-	double sum;
-	for(i=1; i<nprocs; ++i) {
-		MPI_Recv(&sum,1,MPI_DOUBLE,MPI_ANY_SOURCE,TAG1,MPI_COMM_WORLD,&stat);
-		logL += sum;
+	for (int i=1; i<nprocs; ++i) {
+		logL += slave_logl[i];
 	}
 	return logL;
 }
@@ -1530,29 +1533,31 @@ void PhyloProcess::GlobalRootAtRandom()	{
 
 void PhyloProcess::GlobalGibbsSPRScan(Link* down, Link* up, double* loglarray)  {
 	assert(myid == 0);
-	int i,j,args[2],nbranch = GetNbranch();
-	MPI_Status stat;
+	const int nbranch = GetNbranch();
+	int args[2];
 	MESSAGE signal = SCAN;
 	args[0] = GetLinkIndex(down);
 	args[1] = GetLinkIndex(up);
 
-	// MPI3 : send message : GibbsSPRScan(idown,iup);
 	MPI_Bcast(&signal,1,MPI_INT,0,MPI_COMM_WORLD);
 	MPI_Bcast(args,2,MPI_INT,0,MPI_COMM_WORLD);
 
-	//
-	// gather all slaves'arrays
-	// into loglarray
-	// of size GetNbranch();
-	// (actually shorter than that, but should be ok)
-	double dvector[nbranch];
-	for(i=0; i<nbranch; ++i) {
+	// MPI_Gather + rank-ordered sum replaces the serial Recv-loop.  Master
+	// contributes zeros (it does not run RecursiveGibbsSPRScan); the local
+	// sum is taken in increasing rank order so the FP add sequence matches
+	// the original byte-for-byte in the common case where the MPI_ANY_SOURCE
+	// receives completed in rank order (the same assumption that prior
+	// tier-A validation runs relied on).
+	for (int i=0; i<nbranch; ++i) {
 		loglarray[i] = 0.0;
 	}
-	for(i=1; i<nprocs; ++i) {
-		MPI_Recv(dvector,nbranch,MPI_DOUBLE,MPI_ANY_SOURCE,TAG1,MPI_COMM_WORLD,&stat);
-		for(j=0; j<nbranch; ++j) {
-			loglarray[j] += dvector[j];
+	double gather_dvec[nbranch * nprocs];
+	MPI_Gather(loglarray,nbranch,MPI_DOUBLE,
+	           gather_dvec,nbranch,MPI_DOUBLE,0,MPI_COMM_WORLD);
+	for (int i=1; i<nprocs; ++i) {
+		const double* dvec = gather_dvec + i * nbranch;
+		for (int j=0; j<nbranch; ++j) {
+			loglarray[j] += dvec[j];
 		}
 	}
 }
@@ -1780,7 +1785,9 @@ void PhyloProcess::SlaveRoot(int n) {
 void PhyloProcess::SlaveLikelihood(int fromindex,int auxindex) {
 	assert(myid > 0);
 	double lvalue = ComputeNodeLikelihood(GetLinkForGibbs(fromindex),auxindex);
-	MPI_Send(&lvalue,1,MPI_DOUBLE,0,TAG1,MPI_COMM_WORLD);
+	// Pair with the master's MPI_Gather in GlobalComputeNodeLikelihood.
+	// recvbuf is unused on non-root ranks (NULL is allowed).
+	MPI_Gather(&lvalue,1,MPI_DOUBLE,NULL,1,MPI_DOUBLE,0,MPI_COMM_WORLD);
 }
 
 void PhyloProcess::SlaveGibbsSPRScan(int idown, int iup)	{
@@ -1791,8 +1798,9 @@ void PhyloProcess::SlaveGibbsSPRScan(int idown, int iup)	{
 	Link* up = GetLink(iup);
 	RecursiveGibbsSPRScan(GetRoot(),GetRoot(),down,up,loglarray,n);
 
-	// MPI3 : send loglarray
-	MPI_Send(loglarray,GetNbranch(),MPI_DOUBLE,0,TAG1,MPI_COMM_WORLD);
+	// Pair with master's MPI_Gather; recvbuf is unused on non-root ranks.
+	MPI_Gather(loglarray,GetNbranch(),MPI_DOUBLE,
+	           NULL,GetNbranch(),MPI_DOUBLE,0,MPI_COMM_WORLD);
 }
 
 void PhyloProcess::SlavePropose(int n,double x) {
@@ -1873,30 +1881,35 @@ void PhyloProcess::SlaveAttach(int n,int m,int p,int q) {
 void PhyloProcess::GlobalUpdateBranchLengthSuffStat()	{
 
 	assert(myid == 0);
-	int i,j,nbranch = GetNbranch();
-	MPI_Status stat;
+	const int nbranch = GetNbranch();
 	MESSAGE signal = UPDATE_BLENGTH;
 
 	MPI_Bcast(&signal,1,MPI_INT,0,MPI_COMM_WORLD);
 
-	for(i=0; i<nbranch; ++i) {
+	// Master contributes zeros to the gather (it owns no sites).  Zeroing
+	// the local arrays first also doubles as the "clear before accumulate"
+	// step the previous Recv-loop opened with.
+	for (int i=0; i<nbranch; ++i) {
 		branchlengthsuffstatcount[i] = 0;
 		branchlengthsuffstatbeta[i] = 0.0;
 	}
 
-	int ivector[nbranch];
-	double dvector[nbranch];
-	for(i=1; i<nprocs; ++i) {
-		MPI_Recv(ivector,nbranch,MPI_INT,i,TAG1,MPI_COMM_WORLD,&stat);
-		for(j=0; j<nbranch; ++j) {
-			branchlengthsuffstatcount[j] += ivector[j];
-		}
-	}
-	MPI_Barrier(MPI_COMM_WORLD);
-	for(i=1; i<nprocs; ++i) {
-		MPI_Recv(dvector,nbranch,MPI_DOUBLE,i,TAG1,MPI_COMM_WORLD,&stat);
-		for(j=0; j<nbranch; ++j) {
-			branchlengthsuffstatbeta[j] += dvector[j];
+	// MPI_Gather replaces the serial Recv-loop (was O(nprocs) sequential
+	// point-to-points + an MPI_Barrier between count and beta).  We then
+	// sum the slave slices in increasing rank order so the FP add sequence
+	// matches the original (((0 + s1) + s2) + ...) byte-for-byte.
+	int gather_ivec[nbranch * nprocs];
+	double gather_dvec[nbranch * nprocs];
+	MPI_Gather(branchlengthsuffstatcount,nbranch,MPI_INT,
+	           gather_ivec,nbranch,MPI_INT,0,MPI_COMM_WORLD);
+	MPI_Gather(branchlengthsuffstatbeta,nbranch,MPI_DOUBLE,
+	           gather_dvec,nbranch,MPI_DOUBLE,0,MPI_COMM_WORLD);
+	for (int i=1; i<nprocs; ++i) {
+		const int* ivec = gather_ivec + i * nbranch;
+		const double* dvec = gather_dvec + i * nbranch;
+		for (int j=0; j<nbranch; ++j) {
+			branchlengthsuffstatcount[j] += ivec[j];
+			branchlengthsuffstatbeta[j] += dvec[j];
 		}
 	}
 
@@ -1928,9 +1941,11 @@ void PhyloProcess::SlaveUpdateBranchLengthSuffStat()	{
 		cerr << "error at root in slave " << GetMyid() << "\n";
 		cerr << branchlengthsuffstatbeta[0] << '\n';
 	}
-	MPI_Send(branchlengthsuffstatcount,GetNbranch(),MPI_INT,0,TAG1,MPI_COMM_WORLD);
-	MPI_Barrier(MPI_COMM_WORLD);
-	MPI_Send(branchlengthsuffstatbeta,GetNbranch(),MPI_DOUBLE,0,TAG1,MPI_COMM_WORLD);
+	// Pair with master's MPI_Gather; recvbuf is unused on non-root ranks.
+	MPI_Gather(branchlengthsuffstatcount,GetNbranch(),MPI_INT,
+	           NULL,GetNbranch(),MPI_INT,0,MPI_COMM_WORLD);
+	MPI_Gather(branchlengthsuffstatbeta,GetNbranch(),MPI_DOUBLE,
+	           NULL,GetNbranch(),MPI_DOUBLE,0,MPI_COMM_WORLD);
 }
 
 void PhyloProcess::GlobalUpdateSiteRateSuffStat()	{

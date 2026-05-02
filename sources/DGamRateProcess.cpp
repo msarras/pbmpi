@@ -168,33 +168,32 @@ double DGamRateProcess::NonMPIMoveAlpha(double tuning, int nrep)	{
 
 void DGamRateProcess::GlobalUpdateRateSuffStat()	{
 	assert(GetMyid() == 0);
-	// MPI2
-	// should ask the slaves to call their UpdateRateSuffStat
-	// and then gather the statistics;
-	int i,j,nprocs = GetNprocs(),workload = GetNcat();
-	MPI_Status stat;
+	const int nprocs = GetNprocs();
+	const int workload = GetNcat();
 	MESSAGE signal = UPDATE_RATE;
 	MPI_Bcast(&signal,1,MPI_INT,0,MPI_COMM_WORLD);
 
-	for(i=0; i<workload; ++i) {
+	// Master contributes zeros; rank-ordered sum of slave slices preserves
+	// the original FP add sequence (the previous MPI_ANY_SOURCE Recv-loop
+	// completed in rank order in practice, validated by prior tier-A runs).
+	for (int i=0; i<workload; ++i) {
 		ratesuffstatcount[i] = 0;
 		ratesuffstatbeta[i] = 0.0;
 	}
-	int ivector[workload];
-	double dvector[workload];
-        for(i=1; i<nprocs; ++i) {
-                MPI_Recv(ivector,workload,MPI_INT,MPI_ANY_SOURCE,TAG1,MPI_COMM_WORLD,&stat);
-                for(j=0; j<workload; ++j) {
-                        ratesuffstatcount[j] += ivector[j];                      
-                }
-        }
-        MPI_Barrier(MPI_COMM_WORLD);
-        for(i=1; i<nprocs; ++i) {
-                MPI_Recv(dvector,workload,MPI_DOUBLE,MPI_ANY_SOURCE,TAG1,MPI_COMM_WORLD,&stat);
-                for(j=0; j<workload; ++j) {
-                        ratesuffstatbeta[j] += dvector[j]; 
-                }
-        }
+	int gather_ivec[workload * nprocs];
+	double gather_dvec[workload * nprocs];
+	MPI_Gather(ratesuffstatcount,workload,MPI_INT,
+	           gather_ivec,workload,MPI_INT,0,MPI_COMM_WORLD);
+	MPI_Gather(ratesuffstatbeta,workload,MPI_DOUBLE,
+	           gather_dvec,workload,MPI_DOUBLE,0,MPI_COMM_WORLD);
+	for (int i=1; i<nprocs; ++i) {
+		const int* ivec = gather_ivec + i * workload;
+		const double* dvec = gather_dvec + i * workload;
+		for (int j=0; j<workload; ++j) {
+			ratesuffstatcount[j] += ivec[j];
+			ratesuffstatbeta[j] += dvec[j];
+		}
+	}
 }
 
 void DGamRateProcess::UpdateRateSuffStat()	{
@@ -215,7 +214,9 @@ void DGamRateProcess::SlaveUpdateRateSuffStat()	{
 
 	UpdateRateSuffStat();
 
-	MPI_Send(ratesuffstatcount,GetNcat(),MPI_INT,0,TAG1,MPI_COMM_WORLD);
-	MPI_Barrier(MPI_COMM_WORLD);
-	MPI_Send(ratesuffstatbeta,GetNcat(),MPI_DOUBLE,0,TAG1,MPI_COMM_WORLD);
-}	
+	// Pair with master's MPI_Gather; recvbuf is unused on non-root ranks.
+	MPI_Gather(ratesuffstatcount,GetNcat(),MPI_INT,
+	           NULL,GetNcat(),MPI_INT,0,MPI_COMM_WORLD);
+	MPI_Gather(ratesuffstatbeta,GetNcat(),MPI_DOUBLE,
+	           NULL,GetNcat(),MPI_DOUBLE,0,MPI_COMM_WORLD);
+}

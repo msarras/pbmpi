@@ -127,15 +127,17 @@ int PhyloProcess::GlobalNNI(Link* from, double tuning, int type)	{
 	loglikelihood[1]=logDiffPriorAndHastings;
 	loglikelihood[2]=logDiffPriorAndHastings;
 
-	// Receive the new loglikelihood
-	double* vec = new double[2];
-	MPI_Status stat;
-	for(int i=1; i<nprocs; ++i) {
-		MPI_Recv(vec,2,MPI_DOUBLE,i,TAG1,MPI_COMM_WORLD,&stat);
-		loglikelihood[1]+=vec[0];
-		loglikelihood[2]+=vec[1];
+	// MPI_Gather + rank-ordered local sum replaces the serial Recv-loop.
+	// Master contributes zeros (it does not run SlaveSendNNILikelihood).
+	// The sum is taken in increasing rank order so the FP add sequence
+	// matches the original Recv-loop byte-for-byte.
+	double gather_vec[2 * nprocs];
+	double sendbuf[2] = {0.0, 0.0};
+	MPI_Gather(sendbuf,2,MPI_DOUBLE,gather_vec,2,MPI_DOUBLE,0,MPI_COMM_WORLD);
+	for (int i=1; i<nprocs; ++i) {
+		loglikelihood[1] += gather_vec[2*i];
+		loglikelihood[2] += gather_vec[2*i + 1];
 	}
-	delete[] vec;
 
 	// Sample a configuration
 	int choice = rnd::GetRandom().DrawFromLogDiscreteDistribution(loglikelihood, 3);
@@ -260,8 +262,8 @@ void PhyloProcess::SlaveNNI(Link* from, int n){
 
 
 int PhyloProcess::SlaveSendNNILikelihood(Link* from){
-	
-	double* loglikelihood = new double[2];
+
+	double loglikelihood[2];
 
 	GetTree()->NNIturn(from);
 	PropagateOverABranch(from->Next());
@@ -271,8 +273,8 @@ int PhyloProcess::SlaveSendNNILikelihood(Link* from){
 	PropagateOverABranch(from->Next());
 	loglikelihood[1]= ComputeNodeLikelihood(from);
 
-	MPI_Send(loglikelihood,2,MPI_DOUBLE,0,TAG1,MPI_COMM_WORLD);
-	delete[] loglikelihood;
+	// Pair with master's MPI_Gather in GlobalNNI; recvbuf is unused here.
+	MPI_Gather(loglikelihood,2,MPI_DOUBLE,NULL,2,MPI_DOUBLE,0,MPI_COMM_WORLD);
 
 	int choice;
 	MPI_Bcast(&choice,1,MPI_INT,0,MPI_COMM_WORLD);

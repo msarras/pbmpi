@@ -189,63 +189,70 @@ void ExpoConjugateGTRPhyloProcess::SlaveUpdateSiteProfileSuffStat()	{
 	               MPI_COMM_WORLD);
 }
 
+// rrsuffstat is summed across slaves and the result is needed on every rank
+// (master uses it for the Gibbs draw of rr; slaves originally received the
+// summed result via MPI_Bcast).  MPI_Allgather + a rank-ordered local sum
+// on every rank achieves both in one collective: each rank ends up with
+// every slave's contribution and computes the same byte-for-byte sum.
+//
+// The master and slave entry points share the post-bcast tail; the only
+// difference is the master's UPDATE_RRATE dispatch and that the master's
+// own contribution to the gather is zero (it owns no sites).
 void ExpoConjugateGTRPhyloProcess::GlobalUpdateRRSuffStat()	{
 
-	// MPI2
-	// should send message to slaves for updating their rrsuffstats
-	// by calling UpdateRRSuffStat();
-	// then collect all suff stats
-	//
-	// suff stats are contained in 2 arrays
-	// int* rrsuffstatcount
-	// double* rrsuffstatbeta
-
-	// should be summed over all slaves (reduced)
 	assert(myid == 0);
-	int i,j,workload = Nrr;
-	MPI_Status stat;
+	const int workload = Nrr;
 	MESSAGE signal = UPDATE_RRATE;
 
 	MPI_Bcast(&signal,1,MPI_INT,0,MPI_COMM_WORLD);
 
-	for(i=0; i<workload; ++i) {
+	// Master's slot in the gather must be zero.
+	for (int i=0; i<workload; ++i) {
 		rrsuffstatcount[i] = 0;
 		rrsuffstatbeta[i] = 0.0;
 	}
 
-	int ivector[workload];
-	double dvector[workload];
-	for(i=1; i<nprocs; ++i) {
-		MPI_Recv(ivector,workload,MPI_INT,i,TAG1,MPI_COMM_WORLD,&stat);
-		// MPI_Recv(ivector,workload,MPI_INT,MPI_ANY_SOURCE,TAG1,MPI_COMM_WORLD,&stat);
-		for(j=0; j<workload; ++j) {
-			rrsuffstatcount[j] += ivector[j];
+	int gather_ivec[workload * nprocs];
+	double gather_dvec[workload * nprocs];
+	MPI_Allgather(rrsuffstatcount,workload,MPI_INT,
+	              gather_ivec,workload,MPI_INT,MPI_COMM_WORLD);
+	MPI_Allgather(rrsuffstatbeta,workload,MPI_DOUBLE,
+	              gather_dvec,workload,MPI_DOUBLE,MPI_COMM_WORLD);
+	for (int i=1; i<nprocs; ++i) {
+		const int* ivec = gather_ivec + i * workload;
+		const double* dvec = gather_dvec + i * workload;
+		for (int j=0; j<workload; ++j) {
+			rrsuffstatcount[j] += ivec[j];
+			rrsuffstatbeta[j] += dvec[j];
 		}
 	}
-	MPI_Barrier(MPI_COMM_WORLD);
-	for(i=1; i<nprocs; ++i) {
-		MPI_Recv(dvector,workload,MPI_DOUBLE,i,TAG1,MPI_COMM_WORLD,&stat);
-		// MPI_Recv(dvector,workload,MPI_DOUBLE,MPI_ANY_SOURCE,TAG1,MPI_COMM_WORLD,&stat);
-		for(j=0; j<workload; ++j) {
-			rrsuffstatbeta[j] += dvector[j];
-		}
-	}
-
-	MPI_Bcast(rrsuffstatcount,Nrr,MPI_INT,0,MPI_COMM_WORLD);
-	MPI_Bcast(rrsuffstatbeta,Nrr,MPI_DOUBLE,0,MPI_COMM_WORLD);
 }
 
 void ExpoConjugateGTRPhyloProcess::SlaveUpdateRRSuffStat()	{
 
 	UpdateRRSuffStat();
-	int workload = Nrr;
+	const int workload = Nrr;
 
-	MPI_Send(rrsuffstatcount,workload,MPI_INT,0,TAG1,MPI_COMM_WORLD);
-	MPI_Barrier(MPI_COMM_WORLD);
-	MPI_Send(rrsuffstatbeta,workload,MPI_DOUBLE,0,TAG1,MPI_COMM_WORLD);
+	int gather_ivec[workload * nprocs];
+	double gather_dvec[workload * nprocs];
+	MPI_Allgather(rrsuffstatcount,workload,MPI_INT,
+	              gather_ivec,workload,MPI_INT,MPI_COMM_WORLD);
+	MPI_Allgather(rrsuffstatbeta,workload,MPI_DOUBLE,
+	              gather_dvec,workload,MPI_DOUBLE,MPI_COMM_WORLD);
 
-	MPI_Bcast(rrsuffstatcount,Nrr,MPI_INT,0,MPI_COMM_WORLD);
-	MPI_Bcast(rrsuffstatbeta,Nrr,MPI_DOUBLE,0,MPI_COMM_WORLD);
+	// Match master's rank-ordered sum so all ranks land on the same bits.
+	for (int i=0; i<workload; ++i) {
+		rrsuffstatcount[i] = 0;
+		rrsuffstatbeta[i] = 0.0;
+	}
+	for (int i=1; i<nprocs; ++i) {
+		const int* ivec = gather_ivec + i * workload;
+		const double* dvec = gather_dvec + i * workload;
+		for (int j=0; j<workload; ++j) {
+			rrsuffstatcount[j] += ivec[j];
+			rrsuffstatbeta[j] += dvec[j];
+		}
+	}
 }
 
 int ExpoConjugateGTRPhyloProcess::GlobalCountMapping()	{
