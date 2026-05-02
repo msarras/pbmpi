@@ -177,28 +177,24 @@ void MatrixSubstitutionProcess::Propagate(double*** from, double*** to, double t
                     int nstate = GetNstate();
                     double* aux = new double[nstate];
                     */
-                    //double* aux = bigaux + nstate * (i*GetNrate(0)  + j);
                     offset = nstate*(i*GetNrate(0) + j);
-                    // P^{-1} . up  -> aux
-                    //double* tmpaux = aux;
-                    for(k=0; k<nstate; k++)	{
-                        //(*tmpaux++) = 0;
-                        aux[offset+k] = 0.0;
-                    }
-                    //tmpaux -= nstate;
-                    //double* tmpup = up;
-                    for(k=0; k<nstate; k++)	{
-                        //double* tmpinveigen = inveigenvect[i];
-                        for(l=0; l<nstate; l++)	{
-                            //(*tmpaux) += (*tmpinveigen++) * (*tmpup++);
-                            aux[offset+k] += inveigenvect[k][l] * up[l];
-                        }
-                        //tmpaux++;
-                        //tmpup -= nstate;
-                    }
-                    //tmpaux -= nstate;
+                    double* const aux_site = aux + offset;
 
-                    // exp(length * L) . aux  -> aux
+                    // P^{-1} . up  -> aux_site
+                    // Local accumulator + hoisted row pointer lets the
+                    // compiler keep the running sum in an FP register and
+                    // emit a single store per output element. Bit-identical
+                    // to the original (same FP add order: ((0 + a0) + a1) + ...).
+                    for(k=0; k<nstate; k++)	{
+                        double sum = 0.0;
+                        const double* row = inveigenvect[k];
+                        for(l=0; l<nstate; l++)	{
+                            sum += row[l] * up[l];
+                        }
+                        aux_site[k] = sum;
+                    }
+
+                    // exp(length * L) . aux_site  -> aux_site
                     // Read from cached expdiag table when available; the
                     // cached entry is exp(time * rate[j] * eigenval[k]),
                     // which equals exp(length * eigenval[k]) bit-for-bit
@@ -207,33 +203,24 @@ void MatrixSubstitutionProcess::Propagate(double*** from, double*** to, double t
                     if (can_dedupe)	{
                         const double* expdiag_jk = expdiag_for_matrix + j * nstate;
                         for(k=0; k<nstate; k++)	{
-                            aux[offset+k] *= expdiag_jk[k];
+                            aux_site[k] *= expdiag_jk[k];
                         }
                     }
                     else	{
                         for(k=0; k<nstate; k++)	{
-                            aux[offset+k] *= exp(length * eigenval[k]);
+                            aux_site[k] *= exp(length * eigenval[k]);
                         }
                     }
 
-                    // P . aux -> down
-                    //double* tmpdown = down;
+                    // P . aux_site -> down
                     for(k=0; k<nstate; k++)	{
-                        //(*tmpdown++) = 0;
-                        down[k] = 0.0;
-                    }
-                    //tmpdown -= nstate;
-
-                    for(k=0; k<nstate; k++)	{
-                        //double* tmpeigen = eigenvect[i];
+                        double sum = 0.0;
+                        const double* row = eigenvect[k];
                         for(l=0; l<nstate; l++)	{
-                            //(*tmpdown) += (*tmpeigen++) * (*tmpaux++);
-                            down[k] += eigenvect[k][l] * aux[offset+l]; 
+                            sum += row[l] * aux_site[l];
                         }
-                        //tmpdown++;
-                        //tmpaux -= nstate;
+                        down[k] = sum;
                     }
-                    //tmpdown -= nstate;
 
                     // exit in case of numerical errors
                     for(k=0; k<nstate; k++)	{
@@ -373,10 +360,12 @@ void MatrixSubstitutionProcess::PropagateTip(const int* leafstates, double*** to
                     if (state == -1)	{
                         // Missing data: up is all-1s. Row sums of P^{-1}.
                         for(k=0; k<nstate; k++)	{
-                            scratch[k] = 0.0;
+                            double sum = 0.0;
+                            const double* row = inveigenvect[k];
                             for(l=0; l<nstate; l++)	{
-                                scratch[k] += inveigenvect[k][l];
+                                sum += row[l];
                             }
+                            scratch[k] = sum;
                         }
                     }
                     else	{
@@ -401,12 +390,12 @@ void MatrixSubstitutionProcess::PropagateTip(const int* leafstates, double*** to
 
                     // P . scratch -> down
                     for(k=0; k<nstate; k++)	{
-                        down[k] = 0.0;
-                    }
-                    for(k=0; k<nstate; k++)	{
+                        double sum = 0.0;
+                        const double* row = eigenvect[k];
                         for(l=0; l<nstate; l++)	{
-                            down[k] += eigenvect[k][l] * scratch[l];
+                            sum += row[l] * scratch[l];
                         }
+                        down[k] = sum;
                     }
 
                     for(k=0; k<nstate; k++)	{
@@ -481,15 +470,13 @@ void MatrixSubstitutionProcess::SitePropagate(int i, double** from, double** to,
 			// P . aux -> down
 
 			// P^{-1} . up  -> aux
-
 			for(k=0; k<nstate; k++)	{
-				aux[k] = 0.0;
-			}
-
-			for(k=0; k<nstate; k++)	{
+				double sum = 0.0;
+				const double* row = inveigenvect[k];
 				for(l=0; l<nstate; l++)	{
-					aux[k] += inveigenvect[k][l] * up[l];
+					sum += row[l] * up[l];
 				}
+				aux[k] = sum;
 			}
 
 			// exp(length * L) . aux  -> aux
@@ -499,13 +486,12 @@ void MatrixSubstitutionProcess::SitePropagate(int i, double** from, double** to,
 
 			// P . aux -> down
 			for(k=0; k<nstate; k++)	{
-				down[k] = 0.0;
-			}
-
-			for(k=0; k<nstate; k++)	{
+				double sum = 0.0;
+				const double* row = eigenvect[k];
 				for(l=0; l<nstate; l++)	{
-					down[k] += eigenvect[k][l] * aux[l]; 
+					sum += row[l] * aux[l];
 				}
+				down[k] = sum;
 			}
 
 			// exit in case of numerical errors
