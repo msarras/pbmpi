@@ -124,85 +124,69 @@ void ExpoConjugateGTRPhyloProcess::UpdateSiteProfileSuffStat()	{
 	}
 }
 
+// Compute the (recvcounts, displs) layout for Allgatherv over the
+// site-partition shared by master and slaves.  Master (rank 0) owns
+// no sites and contributes 0 elements.  Each slave i (1..nprocs-1)
+// owns [(i-1)*width, i*width) in flat units of GlobalNstate, with the
+// last slave receiving any remainder.  Layout depends only on nprocs
+// and GetNsite(), so it is identical on every rank.
+static void compute_siteprofile_layout(int nprocs, int nsite, int nstate,
+                                        int* recvcounts, int* displs) {
+	int width = nsite / (nprocs - 1);
+	recvcounts[0] = 0;
+	displs[0] = 0;
+	for (int i = 1; i < nprocs; ++i) {
+		int smin = (i - 1) * width;
+		int smax = (i == nprocs - 1) ? nsite : i * width;
+		recvcounts[i] = (smax - smin) * nstate;
+		displs[i] = smin * nstate;
+	}
+}
+
 void ExpoConjugateGTRPhyloProcess::GlobalUpdateSiteProfileSuffStat()	{
 
 	// MPI2
-	// ask slaves to update siteprofilesuffstats
-	// slaves should call : UpdateSiteProfileSuffStat
-	// then collect all suff stats
+	// ask slaves to update siteprofilesuffstats then Allgatherv into the
+	// master and back to all slaves in a single collective.  The previous
+	// implementation used a serial Recv-per-slave gather + Bcast pair,
+	// which forced O(nprocs) sequential copies through stack ivector/dvector
+	// on the master and an extra round-trip.  Bit-identical because there
+	// is no summation -- each slave owns a unique site slice and the data
+	// is just moved into place.
 	assert(myid == 0);
-	int i,j,k,l,width,nalloc,smin[nprocs-1],smax[nprocs-1],workload[nprocs-1];
-	MPI_Status stat;
 	MESSAGE signal = UPDATE_SPROFILE;
 	MPI_Bcast(&signal,1,MPI_INT,0,MPI_COMM_WORLD);
 
-	// suff stats are contained in 2 arrays
-	// int** siteprofilesuffstatcount
-	// double** siteprofilesuffstatbeta
-	// [site][state]
+	int recvcounts[nprocs], displs[nprocs];
+	compute_siteprofile_layout(nprocs, GetNsite(), GetGlobalNstate(), recvcounts, displs);
 
-	// each slave computes its array for sitemin <= site < sitemax
-	// thus, one just needs to gather all arrays into the big master array 0 <= site < Nsite
-	// (gather)
-	width = GetNsite()/(nprocs-1);
-	nalloc = 0;
-	for(i=0; i<nprocs-1; ++i) {
-		smin[i] = width*i;
-		smax[i] = width*(1+i);
-		if (i == (nprocs-2)) smax[i] = GetNsite();
-		workload[i] = (smax[i] - smin[i])*GetGlobalNstate();
-		if (workload[i] > nalloc) nalloc = workload[i];
-	}
-
-	int ivector[nalloc];
-	double dvector[nalloc];
-	for(i=1; i<nprocs; ++i) {
-		MPI_Recv(ivector,workload[i-1],MPI_INT,i,TAG1,MPI_COMM_WORLD,&stat);
-		l = 0;
-		for(j=smin[i-1]; j<smax[i-1]; ++j) {
-			for(k=0; k<GetGlobalNstate(); ++k) {
-				siteprofilesuffstatcount[j][k] = ivector[l]; l++;
-			}
-		}
-	}
-	for(i=1; i<nprocs; ++i) {
-		MPI_Recv(dvector,workload[i-1],MPI_DOUBLE,i,TAG1,MPI_COMM_WORLD,&stat);
-		l = 0;
-		for(j=smin[i-1]; j<smax[i-1]; ++j) {
-			for(k=0; k<GetGlobalNstate(); ++k) {
-				siteprofilesuffstatbeta[j][k] = dvector[l]; l++;
-			}
-		}
-	}
-
-	MPI_Bcast(allocsiteprofilesuffstatcount,GetNsite()*GetGlobalNstate(),MPI_INT,0,MPI_COMM_WORLD);
-	MPI_Bcast(allocsiteprofilesuffstatbeta,GetNsite()*GetGlobalNstate(),MPI_DOUBLE,0,MPI_COMM_WORLD);
+	// Master contributes nothing; receives full gather into allocsiteprofile*.
+	MPI_Allgatherv(MPI_IN_PLACE, 0, MPI_INT,
+	               allocsiteprofilesuffstatcount, recvcounts, displs, MPI_INT,
+	               MPI_COMM_WORLD);
+	MPI_Allgatherv(MPI_IN_PLACE, 0, MPI_DOUBLE,
+	               allocsiteprofilesuffstatbeta, recvcounts, displs, MPI_DOUBLE,
+	               MPI_COMM_WORLD);
 }
 
 void ExpoConjugateGTRPhyloProcess::SlaveUpdateSiteProfileSuffStat()	{
 
 	UpdateSiteProfileSuffStat();
-	int i,j,workload = (sitemax - sitemin)*GetGlobalNstate();
 
-	int k = 0,ivector[workload];
-	for(i=sitemin; i<sitemax; ++i) {
-		for(j=0; j<GetGlobalNstate(); ++j) {
-			ivector[k] = siteprofilesuffstatcount[i][j]; k++;
-		}
-	}
-	MPI_Send(ivector,workload,MPI_INT,0,TAG1,MPI_COMM_WORLD);
-	// MPI_Barrier(MPI_COMM_WORLD);
-	double dvector[workload];
-	k = 0;
-	for(i=sitemin; i<sitemax; ++i) {
-		for(j=0; j<GetGlobalNstate(); ++j) {
-			dvector[k] = siteprofilesuffstatbeta[i][j]; k++;
-		}
-	}
-	MPI_Send(dvector,workload,MPI_DOUBLE,0,TAG1,MPI_COMM_WORLD);
+	// siteprofilesuffstatcount[i] is a pointer-view into
+	// allocsiteprofilesuffstatcount + i*GetDim() (see Create()), so the
+	// slave's just-computed slice already lives at the correct offset
+	// (displs[myid]) in the flat buffer.  Allgatherv with MPI_IN_PLACE
+	// reads from that slot and gathers all slices into every rank.
+	int recvcounts[nprocs], displs[nprocs];
+	compute_siteprofile_layout(nprocs, GetNsite(), GetGlobalNstate(), recvcounts, displs);
 
-	MPI_Bcast(allocsiteprofilesuffstatcount,GetNsite()*GetGlobalNstate(),MPI_INT,0,MPI_COMM_WORLD);
-	MPI_Bcast(allocsiteprofilesuffstatbeta,GetNsite()*GetGlobalNstate(),MPI_DOUBLE,0,MPI_COMM_WORLD);
+	MPI_Allgatherv(MPI_IN_PLACE, 0, MPI_INT,
+	               allocsiteprofilesuffstatcount, recvcounts, displs, MPI_INT,
+	               MPI_COMM_WORLD);
+	MPI_Allgatherv(MPI_IN_PLACE, 0, MPI_DOUBLE,
+	               allocsiteprofilesuffstatbeta, recvcounts, displs, MPI_DOUBLE,
+	               MPI_COMM_WORLD);
 }
 
 void ExpoConjugateGTRPhyloProcess::GlobalUpdateRRSuffStat()	{
