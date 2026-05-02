@@ -47,6 +47,8 @@ class MatrixSubstitutionProcess : public virtual SubstitutionProcess, public vir
 	// CPU Level 3: implementations of likelihood propagation and substitution mapping methods
 	void Propagate(double*** from, double*** to, double time, bool condalloc = false);
 
+	void PropagateTip(const int* leafstates, double*** to, double time, double*** aux, bool condalloc = false);
+
 	void SitePropagate(int site, double** from, double** to, double time, bool condalloc = false);
 
 	BranchSitePath** SamplePaths(int* stateup, int* statedown, double time);

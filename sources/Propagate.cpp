@@ -297,6 +297,144 @@ void MatrixSubstitutionProcess::Propagate(double*** from, double*** to, double t
     // aux is the persistent member buffer; do not delete here.
 }
 
+// Fused Initialize+Propagate for leaf branches.  When leafstates[i] is a
+// known state s (>= 0), up[] is the indicator at s, so P^{-1}*up reduces
+// to column s of P^{-1} — skipping the first O(nstate^2) matvec entirely.
+// When leafstates[i] == -1 (missing data), up is all-1s and we fall back
+// to the full row-sum path (same cost as Propagate).  The result is
+// bit-identical to Initialize(aux)+Propagate(aux,to) because:
+//   x*0.0 = 0.0, x*1.0 = x, and 0.0+x = x  in IEEE 754,
+// so the reduced sum over the indicator equals the exact column entry.
+void MatrixSubstitutionProcess::PropagateTip(const int* leafstates, double*** to, double time, double*** /*aux*/, bool condalloc)	{
+
+	int i,j,k,l;
+	double length,max;
+	const int nstate = GetMatrix(sitemin)->GetNstate();
+	const int nrate = GetNrate(0);
+
+	if ((size_t)nstate > propagate_aux_size)	{
+		delete[] propagate_aux;
+		propagate_aux = new double[nstate];
+		propagate_aux_size = nstate;
+	}
+
+	const bool can_dedupe = SumOverRateAllocations();
+	if (can_dedupe)	{
+		matrix_to_slot.clear();
+		int nmat = 0;
+		for (int s=sitemin; s<sitemax; s++)	{
+			if (ActiveSite(s))	{
+				SubMatrix* m = GetMatrix(s);
+				if (matrix_to_slot.find(m) == matrix_to_slot.end())	{
+					matrix_to_slot[m] = nmat++;
+				}
+			}
+		}
+		const size_t exp_needed = (size_t) nmat * nrate * nstate;
+		if (exp_needed > expdiag_aux_size)	{
+			delete[] expdiag_aux;
+			expdiag_aux = new double[exp_needed];
+			expdiag_aux_size = exp_needed;
+		}
+		for (auto& p : matrix_to_slot)	{
+			SubMatrix* m = p.first;
+			int mi = p.second;
+			double* eigenval_m = m->GetEigenVal();
+			double* base = expdiag_aux + (size_t) mi * nrate * nstate;
+			for (int jj=0; jj<nrate; jj++)	{
+				double lj = time * GetRate(0, jj);
+				double* slot = base + jj * nstate;
+				for (int kk=0; kk<nstate; kk++)	{
+					slot[kk] = exp(lj * eigenval_m[kk]);
+				}
+			}
+		}
+	}
+
+	for(i=sitemin; i<sitemax; i++)	{
+        if (ActiveSite(i))  {
+            SubMatrix* matrix = GetMatrix(i);
+            double** eigenvect = matrix->GetEigenVect();
+            double** inveigenvect = matrix->GetInvEigenVect();
+            double* eigenval = matrix->GetEigenVal();
+            int state = leafstates[i];
+            const double* expdiag_for_matrix = 0;
+            if (can_dedupe)	{
+                int mi = matrix_to_slot[matrix];
+                expdiag_for_matrix = expdiag_aux + (size_t) mi * nrate * nstate;
+            }
+            for(j=0; j<GetNrate(i); j++)	{
+                if ((!condalloc) || (ratealloc[i] == j))	{
+                    double* down = to[i][j];
+                    length = time * GetRate(i,j);
+
+                    double* scratch = propagate_aux;
+
+                    if (state == -1)	{
+                        // Missing data: up is all-1s. Row sums of P^{-1}.
+                        for(k=0; k<nstate; k++)	{
+                            scratch[k] = 0.0;
+                            for(l=0; l<nstate; l++)	{
+                                scratch[k] += inveigenvect[k][l];
+                            }
+                        }
+                    }
+                    else	{
+                        // Known state: column read replaces matvec.
+                        for(l=0; l<nstate; l++)	{
+                            scratch[l] = inveigenvect[l][state];
+                        }
+                    }
+
+                    // exp(length * L) . scratch
+                    if (can_dedupe)	{
+                        const double* expdiag_jk = expdiag_for_matrix + j * nstate;
+                        for(k=0; k<nstate; k++)	{
+                            scratch[k] *= expdiag_jk[k];
+                        }
+                    }
+                    else	{
+                        for(k=0; k<nstate; k++)	{
+                            scratch[k] *= exp(length * eigenval[k]);
+                        }
+                    }
+
+                    // P . scratch -> down
+                    for(k=0; k<nstate; k++)	{
+                        down[k] = 0.0;
+                    }
+                    for(k=0; k<nstate; k++)	{
+                        for(l=0; l<nstate; l++)	{
+                            down[k] += eigenvect[k][l] * scratch[l];
+                        }
+                    }
+
+                    for(k=0; k<nstate; k++)	{
+                        if (std::isnan(down[k]))	{
+                            cerr << "error in PropagateTip\n";
+                            for(l=0; l<nstate; l++)	{
+                                cerr << down[l] << '\t' << matrix->Stationary(l) << '\n';
+                            }
+                            exit(1);
+                        }
+                    }
+                    max = 0.0;
+                    for(k=0; k<nstate; k++)	{
+                        if (down[k] < 0.0)	{
+                            infprobcount++;
+                            down[k] = 0.0;
+                        }
+                        if (max < down[k])	{
+                            max = down[k];
+                        }
+                    }
+                    down[nstate] = 0;
+                }
+            }
+        }
+    }
+}
+
 void MatrixSubstitutionProcess::SitePropagate(int i, double** from, double** to, double time, bool condalloc)	{
 
 	// propchrono.Start();

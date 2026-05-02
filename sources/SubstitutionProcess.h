@@ -136,6 +136,14 @@ class SubstitutionProcess : public virtual RateProcess, public virtual ProfilePr
 	// implemented in GTR or POisson Substitution process
 	virtual void Propagate(double*** from, double*** to, double time, bool condalloc = false) = 0;
 
+	// Fused Initialize+Propagate for leaf branches. When the child is a
+	// leaf, up[k] = (k==state ? 1 : 0), so the P^{-1}*up matvec reduces
+	// to a column read. aux is used as scratch by the default fallback.
+	virtual void PropagateTip(const int* leafstates, double*** to, double time, double*** aux, bool condalloc = false)	{
+		Initialize(aux, leafstates, condalloc);
+		Propagate(aux, to, time, condalloc);
+	}
+
 	virtual void SimuPropagate(int* stateup, int* statedown, double time) = 0;
 
 	// CPU : level 1
