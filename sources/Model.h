@@ -337,6 +337,15 @@ class Model	{
 			Monitor(mos);
 			mos.close();
 
+			// Per-cycle SPR/NNI attempt/accept tally (master-only).
+			// File is created on the first cycle of each run; subsequent
+			// cycles append. Counters reset inside LogTopoMoves.
+			{
+				ofstream tmos((name + ".topomon").c_str(), ios_base::app);
+				process->LogTopoMoves(tmos);
+				tmos.close();
+			}
+
 			ofstream pos((name + ".param").c_str());
 			pos.precision(numeric_limits<double>::digits10);
 			ToStream(pos,true);

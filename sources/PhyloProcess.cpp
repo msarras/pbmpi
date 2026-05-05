@@ -569,9 +569,30 @@ double PhyloProcess::MoveTopo(int spr, int nni){
 	double success = 0;
 
 	if (size >= topoburnin)	{
-		success += GibbsSPR(spr);
+		// SPR loop, inlined so per-attempt accept counts can be captured.
+		// Mirrors GibbsSPR(int nrep): bracket the nrep single-attempt calls
+		// with GlobalUpdateConditionalLikelihoods so downstream moves see
+		// fresh likelihoods. Skipped entirely when spr==0 to preserve the
+		// old code path for callers that pass zero.
+		if (spr > 0) {
+			GlobalUpdateConditionalLikelihoods();
+			for (int rep=0; rep<spr; rep++) {
+				int acc = GibbsSPR();
+				topo_spr_attempts++;
+				topo_spr_accepts += acc;
+				success += acc;
+			}
+			GlobalUpdateConditionalLikelihoods();
+		}
 		for(int i=0; i<nni; i++){
-			success += GibbsNNI(0.1,1);
+			int s = 0;
+			int m = 0;
+			GibbsNNIWithCounts(0.1, 1, s, m);
+			topo_nni_attempts += m;
+			topo_nni_accepts  += s;
+			if (m > 0) {
+				success += ((double) s) / m;
+			}
 		}
 	}
 	return success;

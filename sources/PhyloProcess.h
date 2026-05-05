@@ -53,7 +53,7 @@ class PhyloProcess : public virtual SubstitutionProcess, public virtual BranchPr
 	// virtual void SlaveUpdate();
 
 	// default constructor: pointers set to nil
-	PhyloProcess() : missingmap(0), sitecondlmap(0), condlmap(0), siteratesuffstatcount(0), siteratesuffstatbeta(0), branchlengthsuffstatcount(0), branchlengthsuffstatbeta(0), condflag(false), data(0), bkdata(0), steppingrank(0), minsitecutoff(-1), maxsitecutoff(-1), myid(-1), nprocs(0), size(0), version("1.9"), totaltime(0), dataclamped(1), rateprior(0), profileprior(0), rootprior(1), topoburnin(0) {
+	PhyloProcess() : missingmap(0), sitecondlmap(0), condlmap(0), siteratesuffstatcount(0), siteratesuffstatbeta(0), branchlengthsuffstatcount(0), branchlengthsuffstatbeta(0), condflag(false), data(0), bkdata(0), steppingrank(0), minsitecutoff(-1), maxsitecutoff(-1), myid(-1), nprocs(0), size(0), version("1.9"), totaltime(0), dataclamped(1), rateprior(0), profileprior(0), rootprior(1), topoburnin(0), topo_spr_attempts(0), topo_spr_accepts(0), topo_nni_attempts(0), topo_nni_accepts(0) {
 		fixbl = 0;
 		sitesuffstat = 1;
 	}
@@ -433,6 +433,7 @@ class PhyloProcess : public virtual SubstitutionProcess, public virtual BranchPr
 	//NNI functions ( in NNI.cpp )
 	void RecursiveGibbsNNI(Link* from, double tuning, int type, int& success, int& moves);
 	double GibbsNNI(double tuning, int);
+	double GibbsNNIWithCounts(double tuning, int type, int& success, int& moves);
 	int  GlobalNNI(Link*,double,int);
 	void GlobalKnit(Link*);
 	void GlobalPropagateOverABranch(Link*);
@@ -650,6 +651,28 @@ class PhyloProcess : public virtual SubstitutionProcess, public virtual BranchPr
 		topoburnin = intopoburnin;
 	}
 
+	// per-cycle topology-move acceptance counters (master-side)
+	long GetTopoSPRAttempts() const { return topo_spr_attempts; }
+	long GetTopoSPRAccepts()  const { return topo_spr_accepts;  }
+	long GetTopoNNIAttempts() const { return topo_nni_attempts; }
+	long GetTopoNNIAccepts()  const { return topo_nni_accepts;  }
+	void ResetTopoMoveCounters()    {
+		topo_spr_attempts = 0;
+		topo_spr_accepts  = 0;
+		topo_nni_attempts = 0;
+		topo_nni_accepts  = 0;
+	}
+	// emit one tab-separated line and reset; safe to call only on master
+	void LogTopoMoves(ostream& os)  {
+		double spr_rate = topo_spr_attempts ? ((double) topo_spr_accepts) / topo_spr_attempts : 0.0;
+		double nni_rate = topo_nni_attempts ? ((double) topo_nni_accepts) / topo_nni_attempts : 0.0;
+		os << GetIndex()
+		   << '\t' << topo_spr_attempts << '\t' << topo_spr_accepts << '\t' << spr_rate
+		   << '\t' << topo_nni_attempts << '\t' << topo_nni_accepts << '\t' << nni_rate
+		   << '\n';
+		ResetTopoMoveCounters();
+	}
+
 	double GetNormFactor() {return GetNormalizationFactor();}
 
 	string version;
@@ -667,6 +690,10 @@ class PhyloProcess : public virtual SubstitutionProcess, public virtual BranchPr
 	int rootprior;
 
 	int topoburnin;
+	long topo_spr_attempts;
+	long topo_spr_accepts;
+	long topo_nni_attempts;
+	long topo_nni_accepts;
 	int fixbl;
 
 	int sitesuffstat;

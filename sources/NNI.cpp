@@ -34,12 +34,22 @@ along with PhyloBayes. If not, see <http://www.gnu.org/licenses/>.
 
 
 double PhyloProcess::GibbsNNI(double tuning, int type){
+	int success = 0;
+	int moves = 0;
+	GibbsNNIWithCounts(tuning, type, success, moves);
+	return moves ? (success / (double) moves) : 0.0;
+}
+
+// Same algorithm as GibbsNNI, but exposes attempt/accept counts so callers
+// (MoveTopo) can accumulate them across repetitions. Out-params reuse the
+// same names as the original locals. Behavior must remain identical to
+// GibbsNNI when called with fresh zeroed counters: every RNG draw, MPI
+// message, and tree mutation has to happen in the same order.
+double PhyloProcess::GibbsNNIWithCounts(double tuning, int type, int& success, int& moves){
 	if(!type){tuning=0;}
 	GlobalRootAtRandom();
 	GlobalUpdateConditionalLikelihoods(); // It have to be call !
 	GlobalComputeNodeLikelihood(GetRoot());
-	int success =0;
-	int moves =0;
 
 	int anumber = rnd::GetRandom().Uniform()*6+1;
 	if(anumber > 1){GlobalKnit(GetRoot());}
@@ -49,12 +59,9 @@ double PhyloProcess::GibbsNNI(double tuning, int type){
 	RecursiveGibbsNNI(GetRoot()->Next()->Out(),tuning,type,success,moves);
 	for (int i=anumber%2+1; i; i--){GlobalKnit(GetRoot());}
 	RecursiveGibbsNNI(GetRoot()->Next()->Out(),tuning,type,success,moves);
-	
-
 
 	GlobalComputeNodeLikelihood(GetRoot());
-	// cerr << success << ' ' << moves << '\n';
-	return success/(double)moves;
+	return moves ? (success / (double) moves) : 0.0;
 }
 
 
