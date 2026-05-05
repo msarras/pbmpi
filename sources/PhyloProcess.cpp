@@ -568,6 +568,19 @@ double PhyloProcess::LocalNonMPIBranchLengthMove(const Link* from, double tuning
 double PhyloProcess::MoveTopo(int spr, int nni){
 	double success = 0;
 
+	// Experimental: post-accept branch-length re-tune (coupled SPR).
+	// Off by default so behavior is bit-identical to the prior code path.
+	// Enable with env PBMPI_COUPLED_SPR=1 (optionally PBMPI_COUPLED_SPR_TUNING=<double>,
+	// default 0.1). Read once per process; reads are negligible at MoveTopo cadence.
+	static const bool coupled_spr = []() {
+		const char* s = getenv("PBMPI_COUPLED_SPR");
+		return s && atoi(s) > 0;
+	}();
+	static const double coupled_spr_tuning = []() {
+		const char* s = getenv("PBMPI_COUPLED_SPR_TUNING");
+		return (s && atof(s) > 0.0) ? atof(s) : 0.1;
+	}();
+
 	if (size >= topoburnin)	{
 		// SPR loop, inlined so per-attempt accept counts can be captured.
 		// Mirrors GibbsSPR(int nrep): bracket the nrep single-attempt calls
@@ -581,6 +594,12 @@ double PhyloProcess::MoveTopo(int spr, int nni){
 				topo_spr_attempts++;
 				topo_spr_accepts += acc;
 				success += acc;
+				if (acc && coupled_spr) {
+					// Refresh BLs so the next GibbsSPR attempt in this loop
+					// scores candidate regrafts against branch lengths that
+					// have been retuned to the just-changed topology.
+					BranchLengthMove(coupled_spr_tuning);
+				}
 			}
 			GlobalUpdateConditionalLikelihoods();
 		}
